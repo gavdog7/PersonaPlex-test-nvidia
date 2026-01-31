@@ -8,34 +8,77 @@ This document outlines the plan to deploy and test NVIDIA PersonaPlex, a real-ti
 
 ---
 
+## Pre-Flight Verification
+
+**Before proceeding with any installation**, verify that required external resources are accessible:
+
+### 1. Verify GitHub Repository
+
+```bash
+# Check repository exists and is accessible
+curl -s https://api.github.com/repos/NVIDIA/personaplex | grep -E '"full_name"|"message"'
+# Expected: "full_name": "NVIDIA/personaplex"
+```
+
+### 2. Verify HuggingFace Model Access
+
+```bash
+# Check model page is accessible (requires account for full access)
+curl -s -o /dev/null -w "%{http_code}" https://huggingface.co/nvidia/personaplex-7b-v1
+# Expected: 200
+```
+
+### 3. Verify Disk Space (Minimum 50GB Free)
+
+```powershell
+# Windows - check drive space
+Get-PSDrive C | Select-Object Used,Free
+```
+
+```bash
+# WSL2 - check home directory space
+df -h ~ | awk 'NR==1 || /home/'
+```
+
+### 4. Verify Network Bandwidth
+
+Model download is ~14GB. Estimate download time:
+- 100 Mbps: ~20 minutes
+- 50 Mbps: ~40 minutes
+- 25 Mbps: ~80 minutes
+
+Ensure stable connection before starting installation.
+
+---
+
 ## System Assessment
 
 ### Current Hardware
 
 | Component | Specification | Status |
 |-----------|---------------|--------|
-| **GPU** | NVIDIA GeForce RTX 5090 | Blackwell Architecture (Experimental Support) |
+| **GPU** | NVIDIA GeForce RTX 5090 | Blackwell Architecture (sm_120) |
 | **VRAM** | 32 GB | Exceeds 24GB minimum, below 80GB recommended |
 | **CPU** | AMD Ryzen (Family 26, ~4700 MHz) | Adequate |
 | **RAM** | 63 GB | Excellent for CPU offloading if needed |
-| **CUDA Version** | 13.0 | Supports Blackwell GPUs |
-| **Driver** | 581.57 | Current |
+| **CUDA Version** | 12.8 | First version with native Blackwell support |
+| **Driver** | 581.57 | Meets R570+ requirement for Blackwell |
 
 ### Current Software
 
 | Component | Version | Status |
 |-----------|---------|--------|
 | **OS** | Windows 11 Pro (Build 26200) | Experimental support; WSL2 recommended |
-| **Python** | 3.13.6 | See Python compatibility note below |
+| **Python** | 3.13.6 (system) | **Use 3.10 or 3.11** - see compatibility note |
 | **WSL2** | Installed (Ubuntu distro available) | Currently stopped |
-| **Docker** | 27.2.0 | Available |
+| **Docker** | 27.2.0 | Available (runs inside WSL2) |
 
 ### Disk Space Requirements
 
 | Component | Size | Notes |
 |-----------|------|-------|
 | **PersonaPlex Model** | ~14 GB | 7B parameter model weights |
-| **PyTorch + CUDA** | ~8 GB | cu130 wheels |
+| **PyTorch + CUDA** | ~8 GB | cu128 wheels |
 | **HuggingFace Cache** | ~5 GB | Tokenizers, configs |
 | **Virtual Environment** | ~3 GB | Python packages |
 | **Working Space** | ~5 GB | Logs, temp files, audio |
@@ -50,33 +93,41 @@ df -h ~
 
 #### GPU Compatibility (RTX 5090 - Blackwell)
 
-The RTX 5090 uses NVIDIA's Blackwell architecture which has **experimental support** in PersonaPlex. Key considerations:
+The RTX 5090 uses NVIDIA's Blackwell architecture (compute capability sm_120). Key considerations:
 
-- **Special PyTorch Installation Required**: Must use cu130 index
+- **Special PyTorch Installation Required**: Must use cu128 index (CUDA 12.8)
   ```bash
-  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
   ```
-- **CUDA 12.4+** required for Blackwell (system has CUDA 13.0)
+- **CUDA 12.8** is the first version with native Blackwell support
+- **Driver R570+** required (system has 581.57 - compatible)
+- PersonaPlex tested on A100/H100; Blackwell support is community-verified but not officially listed
 - May require updates to rustymimi codec for full compatibility
 
 #### Python Version Compatibility
 
-**Warning**: Python 3.13 is relatively new and may have compatibility issues with some ML packages.
+**Requirement**: Use **Python 3.10 or 3.11** for this installation.
 
-**Recommended approach**:
-1. First attempt with system Python 3.13
-2. If issues occur, install Python 3.10 or 3.11 via pyenv:
-   ```bash
-   # Install pyenv
-   curl https://pyenv.run | bash
+Python 3.13 has compatibility issues with many ML packages, especially those with compiled Rust/CUDA extensions like rustymimi. Do not attempt installation with Python 3.13.
 
-   # Install Python 3.10
-   pyenv install 3.10.14
-   pyenv local 3.10.14
+**Install Python 3.10 via pyenv** (in WSL2):
+```bash
+# Install pyenv
+curl https://pyenv.run | bash
 
-   # Verify
-   python --version  # Should show 3.10.14
-   ```
+# Add to shell configuration
+echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc
+echo 'command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc
+echo 'eval "$(pyenv init -)"' >> ~/.bashrc
+source ~/.bashrc
+
+# Install Python 3.10
+pyenv install 3.10.14
+pyenv global 3.10.14
+
+# Verify
+python --version  # Should show 3.10.14
+```
 
 #### Memory Considerations
 
@@ -107,6 +158,31 @@ Docker provides containerization and reproducibility but requires NVIDIA Contain
 ---
 
 ## Pre-Installation Requirements
+
+### 0. Create WSL2 Backup (Recommended)
+
+Before making any changes, create a backup of your WSL2 Ubuntu installation:
+
+```powershell
+# In PowerShell (as Administrator)
+# Stop WSL first
+wsl --shutdown
+
+# Export current state (may take several minutes)
+wsl --export Ubuntu "$env:USERPROFILE\Ubuntu-backup-$(Get-Date -Format 'yyyy-MM-dd').tar"
+
+# Verify backup was created
+Get-Item "$env:USERPROFILE\Ubuntu-backup-*.tar"
+```
+
+**To restore from backup if needed:**
+```powershell
+# Unregister corrupted installation
+wsl --unregister Ubuntu
+
+# Import from backup
+wsl --import Ubuntu "$env:LOCALAPPDATA\Ubuntu" "$env:USERPROFILE\Ubuntu-backup-2026-01-30.tar"
+```
 
 ### 1. HuggingFace Account Setup
 
@@ -168,16 +244,17 @@ wget https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/
 sudo dpkg -i cuda-keyring_1.1-1_all.deb
 sudo apt-get update
 
-# Install CUDA toolkit (compiler and libraries)
-sudo apt-get -y install cuda-toolkit-13-0
+# Install CUDA 12.8 toolkit (first version with native Blackwell support)
+sudo apt-get -y install cuda-toolkit-12-8
 
 # Add to PATH
-echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+echo 'export PATH=/usr/local/cuda-12.8/bin:$PATH' >> ~/.bashrc
+echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
 source ~/.bashrc
 
 # Verify installation
 nvcc --version
+# Expected: release 12.8
 ```
 
 ### 5. Rust Toolchain (for rustymimi codec)
@@ -238,7 +315,7 @@ nvidia-smi
 nvcc --version
 ```
 
-Expected `nvidia-smi` output should show the RTX 5090 with CUDA 13.0.
+Expected `nvidia-smi` output should show the RTX 5090 with CUDA 12.8.
 
 #### Step 1.3: Check Disk Space
 
@@ -247,38 +324,53 @@ df -h ~ | awk 'NR==1 || /home/'
 # Ensure at least 50GB free
 ```
 
-#### Step 1.4: Create Python Virtual Environment
+#### Step 1.4: Create Project Directory and Virtual Environment
 
 ```bash
-mkdir -p ~/personaplex
-cd ~/personaplex
+# Create project directory
+mkdir -p ~/projects
+cd ~/projects
 
-# Use system Python (try 3.13 first)
-python3 -m venv venv
-source venv/bin/activate
+# Clone repository first
+git clone https://github.com/NVIDIA/personaplex.git
+cd personaplex
+
+# Create virtual environment using pyenv Python 3.10
+python -m venv .venv
+source .venv/bin/activate
+
+# Verify Python version
+python --version  # Should show 3.10.x
 
 # Upgrade pip
 pip install --upgrade pip setuptools wheel
 ```
 
+**Directory structure after this step:**
+```
+~/projects/
+└── personaplex/           # Repository root
+    ├── .venv/             # Virtual environment
+    ├── moshi/             # Moshi package
+    ├── assets/            # Test assets
+    └── ...
+```
+
 ### Phase 2: PersonaPlex Installation
 
-#### Step 2.1: Clone PersonaPlex Repository
+#### Step 2.1: Install PyTorch with Blackwell Support
+
+**Critical**: Use cu128 index for RTX 5090 (CUDA 12.8) compatibility:
 
 ```bash
-git clone https://github.com/NVIDIA/personaplex.git
-cd personaplex
+# Ensure virtual environment is activated
+source .venv/bin/activate
+
+# Install PyTorch 2.7+ with CUDA 12.8 support
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 ```
 
-#### Step 2.2: Install PyTorch with Blackwell Support
-
-**Critical**: Use cu130 index for RTX 5090 compatibility:
-
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
-```
-
-#### Step 2.3: Install Moshi Package
+#### Step 2.2: Install Moshi Package
 
 ```bash
 # Install with verbose output to catch compilation issues
@@ -287,7 +379,7 @@ pip install ./moshi -v
 
 If rustymimi compilation fails, see Troubleshooting section.
 
-#### Step 2.4: Install Additional Dependencies
+#### Step 2.3: Install Additional Dependencies
 
 ```bash
 # For CPU offloading support
@@ -297,7 +389,7 @@ pip install accelerate
 pip install python-dotenv
 ```
 
-#### Step 2.5: Configure HuggingFace Token
+#### Step 2.4: Configure HuggingFace Token
 
 **Option A**: Environment variable (current session only)
 ```bash
@@ -323,7 +415,7 @@ set -a && source .env && set +a
 # Or use python-dotenv in Python scripts (automatic)
 ```
 
-#### Step 2.6: Create Version Lock File
+#### Step 2.5: Create Version Lock File
 
 After successful installation, lock versions for reproducibility:
 
@@ -348,9 +440,9 @@ print(f'Device count: {torch.cuda.device_count()}')
 
 Expected output:
 ```
-PyTorch version: 2.x.x+cu130
+PyTorch version: 2.7.x+cu128
 CUDA available: True
-CUDA version: 13.0
+CUDA version: 12.8
 Device: NVIDIA GeForce RTX 5090
 Device count: 1
 ```
@@ -419,6 +511,24 @@ mkdir -p ~/.personaplex/ssl
 # Use persistent directory
 python -m moshi.server --ssl ~/.personaplex/ssl
 ```
+
+### Security Considerations
+
+**Warning**: The default server configuration has no authentication. Consider these precautions:
+
+1. **Bind to localhost only** (if supported):
+   ```bash
+   python -m moshi.server --ssl ~/.personaplex/ssl --host 127.0.0.1
+   ```
+
+2. **Do not expose to public networks** without additional authentication
+
+3. **Use firewall rules** to restrict access to trusted IPs only
+
+4. **Monitor active connections** during operation:
+   ```bash
+   ss -tlnp | grep 8998
+   ```
 
 ---
 
@@ -551,19 +661,41 @@ Test various voice and role combinations.
 
 ### Expected Performance Metrics
 
-| Metric | Target | Stretch Goal | Notes |
-|--------|--------|--------------|-------|
-| **Audio Latency** | <500ms | <200ms | End-to-end response time; WSLg adds ~50ms |
-| **VRAM Usage** | <28GB | <24GB | Leave headroom for stability |
-| **First Response** | <5s | <3s | Initial model warmup |
-| **Sustained Usage** | Stable | Stable | No memory leaks over 10+ turns |
+| Metric | Target | Notes |
+|--------|--------|-------|
+| **Audio Latency** | <500ms | End-to-end response time; WSLg adds ~50ms overhead |
+| **VRAM Usage** | <28GB | Leave headroom for stability |
+| **First Response** | <5s | Initial model warmup |
+| **Sustained Usage** | Stable | No memory leaks over 10+ turns |
+| **GPU Temperature** | <85°C | Throttling begins above this |
 
-**Note**: Actual latency depends on model complexity, GPU performance, and audio stack. The <200ms target is a stretch goal; <500ms is more realistic for initial deployment.
+**Note**: The <200ms latency target sometimes cited is **not achievable with WSLg**. The audio passthrough overhead alone is 30-50ms. For sub-200ms latency, use native Linux with direct ALSA/PulseAudio access.
+
+### Thermal and Power Considerations
+
+The RTX 5090 is a high-power GPU. Monitor thermals during sustained inference:
+
+```bash
+# Check GPU temperature
+nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader
+# Alert threshold: 85°C (throttling begins)
+# Danger threshold: 90°C (shutdown imminent)
+```
+
+**Symptoms of thermal throttling:**
+- Sudden latency spikes during conversation
+- GPU clock speed drops (visible in nvidia-smi)
+- Fan noise increases significantly
+
+**Mitigations:**
+- Ensure adequate case airflow
+- Consider undervolting if temperatures exceed 85°C consistently
+- Use `--cpu-offload` to reduce GPU load
 
 ### Monitoring Commands
 
 ```bash
-# Watch GPU usage during inference
+# Watch GPU usage during inference (includes temperature)
 watch -n 1 nvidia-smi
 
 # Monitor memory usage continuously
@@ -625,11 +757,11 @@ htop
 - `torch.cuda.is_available()` returns `False`
 
 **Solutions:**
-1. Verify cu130 PyTorch installed:
+1. Verify cu128 PyTorch installed:
    ```bash
    pip show torch | grep Version
    python -c "import torch; print(torch.__version__)"
-   # Should show version ending in +cu130
+   # Should show version ending in +cu128
    ```
 2. Check NVIDIA driver in WSL2:
    ```bash
@@ -638,7 +770,7 @@ htop
 3. Reinstall with correct index:
    ```bash
    pip uninstall torch torchvision torchaudio -y
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
    ```
 
 ### Issue: Web UI Not Accessible
@@ -740,7 +872,7 @@ htop
    source venv/bin/activate
 
    # Reinstall packages
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
    pip install ./moshi
    ```
 
@@ -758,7 +890,7 @@ deactivate
 
 # Remove installation
 cd ~
-rm -rf ~/personaplex
+rm -rf ~/projects/personaplex
 
 # Clear pip cache
 pip cache purge
@@ -774,7 +906,8 @@ rm -rf ~/.cache/huggingface
 To reinstall just the moshi package:
 
 ```bash
-cd ~/personaplex/personaplex
+cd ~/projects/personaplex
+source .venv/bin/activate
 pip uninstall moshi -y
 pip install ./moshi -v
 ```
@@ -784,7 +917,7 @@ To reinstall PyTorch:
 ```bash
 pip uninstall torch torchvision torchaudio -y
 pip cache remove torch*
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 ```
 
 ### WSL2 Reset
@@ -803,7 +936,12 @@ wsl -d Ubuntu
 
 ## Alternative Deployment: Docker
 
-If WSL2 presents issues, Docker provides a containerized alternative.
+**Note**: Docker on Windows runs inside WSL2, so this is **not a true alternative** to the WSL2 approach above. Docker provides containerization and reproducibility benefits but does not bypass WSL2 limitations (audio latency, GPU passthrough complexity).
+
+Use Docker if you prefer:
+- Reproducible, isolated environment
+- Easy cleanup (just delete the container)
+- Sharing the same setup with others
 
 ### Docker Setup
 
@@ -827,7 +965,7 @@ sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 
 # Verify
-docker run --rm --gpus all nvidia/cuda:13.0-base-ubuntu22.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
 ```
 
 #### Step 2: Build PersonaPlex Image
@@ -859,15 +997,16 @@ docker-compose up
 
 ### RTX 5090 (Blackwell) Experimental Status
 
-1. **PyTorch Support**: May encounter edge cases with cu130
+1. **PyTorch Support**: May encounter edge cases with cu128
 2. **Compilation**: rustymimi may need source modifications for Blackwell-specific optimizations
 3. **Performance**: Optimizations may not be fully tuned for Blackwell architecture
 
 ### Windows/WSL2 Considerations
 
-1. **Audio Passthrough**: WSLg adds ~30-50ms latency; may not achieve <200ms target
+1. **Audio Passthrough**: WSLg adds ~30-50ms latency; sub-200ms response is **not achievable** with this setup
 2. **Network Access**: Port forwarding from WSL2 to Windows may require manual configuration
 3. **File System**: Performance impact when accessing Windows files from WSL2 (use Linux filesystem)
+4. **Docker Alternative**: Docker on Windows also runs in WSL2, so it doesn't bypass these limitations
 
 ### Memory Constraints (32GB VRAM)
 
@@ -948,17 +1087,17 @@ docker-compose up
 wsl -d Ubuntu
 
 # Navigate to project
-cd ~/personaplex/personaplex
+cd ~/projects/personaplex
 
 # Activate environment
-source ~/personaplex/venv/bin/activate
+source .venv/bin/activate
 
 # Load environment variables
 set -a && source .env && set +a
 
-# Start server with persistent SSL
+# Start server with persistent SSL (localhost only for security)
 mkdir -p ~/.personaplex/ssl
-python -m moshi.server --ssl ~/.personaplex/ssl
+python -m moshi.server --ssl ~/.personaplex/ssl --host 127.0.0.1
 ```
 
 ---
@@ -969,12 +1108,12 @@ python -m moshi.server --ssl ~/.personaplex/ssl
 Host Name:        GAVDOG-PC
 GPU:              NVIDIA GeForce RTX 5090
 VRAM:             32 GB
-CUDA Version:     13.0
+CUDA Version:     12.8
 Driver:           581.57
 CPU:              AMD Ryzen (~4700 MHz)
 RAM:              63 GB
 OS:               Windows 11 Pro (Build 26200)
-Python:           3.13.6 (3.10/3.11 recommended if issues)
+Python:           3.10.14 (via pyenv; system has 3.13.6)
 WSL2:             Ubuntu available
 Docker:           27.2.0
 ```
@@ -993,4 +1132,15 @@ Docker:           27.2.0
 ---
 
 *Document generated: January 30, 2026*
-*Last updated: January 30, 2026 - Added disk space requirements, CUDA toolkit installation, audio configuration, network/firewall setup, cleanup procedures, version pinning, and expanded troubleshooting.*
+*Last updated: January 30, 2026 - Critical review and corrections:*
+- *Fixed CUDA version: 13.0 → 12.8 (first version with native Blackwell support)*
+- *Fixed PyTorch index: cu130 → cu128*
+- *Added pre-flight verification section for external resources*
+- *Added WSL2 backup step before installation*
+- *Changed Python recommendation: use 3.10/3.11 from start (not 3.13)*
+- *Fixed directory structure to avoid nested personaplex/personaplex*
+- *Added thermal monitoring and power considerations*
+- *Added security notes for server deployment*
+- *Clarified Docker is not a true alternative (still runs in WSL2)*
+- *Removed unrealistic <200ms latency target for WSLg setup*
+- *Added network bandwidth requirements*
